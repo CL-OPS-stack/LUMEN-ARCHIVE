@@ -1102,7 +1102,11 @@ function download(name, text) {
   const a = Object.assign(document.createElement('a'), { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
-const safeName = s => s.replace(/[\\/:*?"<>|#%]+/g, '_').slice(0, 120);
+const safeName = s => {
+  const clean = s.replace(/[\\/:*?"<>|#%]+/g, '_').replace(/\s+/g, ' ').trim();
+  const m = clean.match(/^(.*?)(\.[a-z0-9]{1,5})?$/i);
+  return m[1].slice(0, 90).trim() + (m[2] || '');   // shorten the title, never the .pdf/.epub ending
+};
 
 /* display popover */
 function syncAa() {
@@ -1444,7 +1448,4 @@ $('#sInstall').onclick = installApp; if (isApp()) $('#sInstall').hidden = true;
 BG.init();
 BOOKS = LS.get('lumen.books', []);
 renderLibrary();
-if (GH.ready()) loadLibrary(); else setSync('local', 'Not connected');
-</script>
-</body>
-</html>
+if (GH.ready()) loadLibrary(); else setSync('local', 'Not connected')
