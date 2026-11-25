@@ -140,6 +140,11 @@ body.still #rays, body.still .ring{animation-play-state:paused}
 .hl{position:absolute;inset:0;pointer-events:none;z-index:1}
 .mark{position:absolute;background:var(--c);opacity:.4;mix-blend-mode:var(--blend);border-radius:2px}
 .mark.underline{background:none;opacity:1;mix-blend-mode:normal;border-bottom:2.5px solid var(--c)}
+#pdfView.drawing{touch-action:none;cursor:crosshair}
+#pdfView.drawing .textLayer{pointer-events:none}
+#pdfView.drawing .pg{box-shadow:0 0 0 2px #ffe7a1, 0 0 0 5px rgba(24,14,3,.55), 0 0 30px rgba(255,210,110,.9)}
+.drawbox{position:absolute;z-index:4;border:1.5px dashed #8a5a10;background:rgba(246,200,85,.28);pointer-events:none}
+.mark.area{border-radius:3px;outline:1.5px solid var(--c);outline-offset:0}
 .notepin{position:absolute;width:20px;height:20px;margin:-6px 0 0 4px;border-radius:50%;background:#1c1104;border:1px solid var(--gold);color:#ffd877;font-family:var(--glyph);font-size:13px;display:grid;place-items:center;box-shadow:0 0 8px rgba(255,200,80,.8)}
 .bmrib{position:absolute;top:-4px;right:18px;width:18px;height:34px;background:linear-gradient(180deg,#ffe9a8,#e0a93a);clip-path:polygon(0 0,100% 0,100% 100%,50% 78%,0 100%);box-shadow:0 0 10px #ffc94a;z-index:2}
 .pg .textLayer{position:absolute;inset:0 !important;width:100% !important;height:100% !important;overflow:hidden;line-height:1;text-align:initial;opacity:1;z-index:2;
@@ -298,6 +303,7 @@ body[data-theme=paper]{--page:#ffffff;--page-fg:#1b1b1b}
     <header class="bar glyphbar">
       <button class="ib" id="rBack" data-i="back" aria-label="Back to library"></button>
       <div class="rtitle"><div class="t" id="rTitle"></div><div class="s" id="rSub"></div></div>
+      <button class="ib" id="rDraw" data-i="pen" aria-label="Mark an area" title="Mark an area" hidden></button>
       <button class="ib" id="rMark" aria-label="Bookmark"><svg class="fillable" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg></button>
       <button class="ib" id="rAa" aria-label="Display settings"><svg viewBox="0 0 24 24"><path d="M3 19l5-13 5 13M4.8 14.5h6.4M15 19l3.2-8 3.2 8M16 16.6h4.4"/></svg></button>
       <button class="ib" id="rPanel" data-i="notes" aria-label="Notes and contents"><span class="sync" id="rSync"></span></button>
@@ -693,6 +699,7 @@ async function openBook(book, opts = {}) {
   setSync(R.doc.dirty ? 'pending' : canSync(book) ? 'synced' : 'local');
   $('#pdfView').hidden = book.ext !== 'pdf'; $('#epubWrap').hidden = book.ext !== 'epub';
   $('#ePrev').hidden = $('#eNext').hidden = book.ext !== 'epub';
+  $('#rDraw').hidden = book.ext !== 'pdf'; R.drawing = false; $('#pdfView').classList.remove('drawing'); $('#rDraw').classList.remove('on');
   try {
     const [buf] = await Promise.all([fetchBookData(book), pullDoc(book, R.doc)]);
     if (R.book !== book) return;
@@ -764,6 +771,10 @@ async function renderPdfPage(pg) {
     const tl = el.querySelector('.textLayer'); tl.innerHTML = '';
     el.style.setProperty('--total-scale-factor', vp.scale); el.style.setProperty('--scale-factor', vp.scale);
     const tc = await page.getTextContent(); if (id !== P.layoutId) return;
+    if (!tc.items.some(i => (i.str || '').trim())) {
+      P.noText = (P.noText || 0) + 1;
+      if ((P.noText >= 2 || pg.n > 1) && !P.warned) { P.warned = true; toast('This PDF is scanned pictures, so its text can’t be selected. Tap ✎ at the top to mark areas instead.', 7000); }
+    }
     await new pdfjsLib.TextLayer({ textContentSource: tc, container: tl, viewport: vp }).render();
     const eoc = document.createElement('div'); eoc.className = 'endOfContent'; tl.appendChild(eoc);
     pg.state = 2; drawPdfMarks(pg);
@@ -782,7 +793,7 @@ function drawPdfMarks(pg) {
     if (a.kind !== 'pdf') continue;
     if (a.type === 'bookmark') { if (a.loc.page === pg.n) h += '<div class="bmrib"></div>'; continue; }
     const rs = (a.loc.rects || []).filter(r => r.p === pg.n);
-    rs.forEach((r, i) => { h += `<div class="mark ${a.style === 'underline' ? 'underline' : ''}" style="left:${r.x * 100}%;top:${r.y * 100}%;width:${r.w * 100}%;height:${r.h * 100}%;--c:${a.color}"></div>`; });
+    rs.forEach((r, i) => { h += `<div class="mark ${a.area ? 'area' : a.style === 'underline' ? 'underline' : ''}" style="left:${r.x * 100}%;top:${r.y * 100}%;width:${r.w * 100}%;height:${r.h * 100}%;--c:${a.color}"></div>`; });
     if (a.note && rs.length) { const l = rs[rs.length - 1]; h += `<div class="notepin" style="left:auto;right:4px;top:${l.y * 100}%">註</div>`; }
     if (a.type === 'note' && a.loc.page === pg.n && !rs.length) h += `<div class="notepin" style="right:6px;top:10px;left:auto">註</div>`;
   }
@@ -802,12 +813,45 @@ function pdfGoto(n, yFrac = 0) {
   const el = P.pages[n - 1].el; $('#pdfView').scrollTop = el.offsetTop + yFrac * el.offsetHeight - 14;
 }
 function onPdfTap(e) {
+  if (R.drawing) return;
   const sel = getSelection(); if (sel && !sel.isCollapsed) return;
   const pgEl = e.target.closest('.pg'); if (!pgEl) return;
   const n = +pgEl.dataset.n, r = pgEl.getBoundingClientRect();
   const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
   const hit = liveAnns().find(a => a.kind === 'pdf' && (a.loc.rects || []).some(q => q.p === n && x >= q.x - .01 && x <= q.x + q.w + .01 && y >= q.y - .006 && y <= q.y + q.h + .006));
   if (hit) openEditor(hit);
+}
+function setDrawing(on) {
+  R.drawing = !!on && R.kind === 'pdf';
+  $('#pdfView').classList.toggle('drawing', R.drawing); $('#rDraw').classList.toggle('on', R.drawing);
+  if (R.drawing) { clearSelection(); hideSelBar(); toast('Drag across the page to mark an area', 2200); }
+}
+function bindDrawing() {
+  const view = $('#pdfView'); let d = null;
+  view.addEventListener('pointerdown', e => {
+    if (!R.drawing) return;
+    const pg = e.target.closest('.pg'); if (!pg) return;
+    e.preventDefault();
+    const r = pg.getBoundingClientRect();
+    d = { pg, r, n: +pg.dataset.n, x0: (e.clientX - r.left) / r.width, y0: (e.clientY - r.top) / r.height, box: document.createElement('div') };
+    d.box.className = 'drawbox'; pg.appendChild(d.box);
+    try { view.setPointerCapture(e.pointerId); } catch {}
+  });
+  view.addEventListener('pointermove', e => {
+    if (!d) return; e.preventDefault();
+    const x1 = Math.max(0, Math.min(1, (e.clientX - d.r.left) / d.r.width)), y1 = Math.max(0, Math.min(1, (e.clientY - d.r.top) / d.r.height));
+    d.x = Math.min(d.x0, x1); d.y = Math.min(d.y0, y1); d.w = Math.abs(x1 - d.x0); d.h = Math.abs(y1 - d.y0);
+    Object.assign(d.box.style, { left: d.x * 100 + '%', top: d.y * 100 + '%', width: d.w * 100 + '%', height: d.h * 100 + '%' });
+  });
+  const end = () => {
+    if (!d) return; const g = d; d = null;
+    setTimeout(() => g.box.remove(), 400);
+    if (!(g.w > 0.015 && g.h > 0.006)) return;
+    const f = v => +v.toFixed(5);
+    R.pending = { kind: 'pdf', area: true, text: '', loc: { page: g.n, rects: [{ p: g.n, x: f(g.x), y: f(g.y), w: f(g.w), h: f(g.h) }] }, label: `p. ${g.n} · area`, pct: g.n / R.pdf.doc.numPages };
+    showSelBar();
+  };
+  view.addEventListener('pointerup', end); view.addEventListener('pointercancel', end);
 }
 function pdfSelection() {
   const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
@@ -869,7 +913,7 @@ async function makeRendition(startCfi) {
   rd.hooks.content.register(contents => {
     try { contents.addStylesheet('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&display=swap'); } catch {}
     contents.document.addEventListener('selectionchange', debounce(() => {
-      const s = contents.window.getSelection(); if ((!s || s.isCollapsed) && R.pending?.kind === 'epub') hideSelBar();
+      const s = contents.window.getSelection(); if ((!s || s.isCollapsed) && R.pending?.kind === 'epub' && !R.selbarBusy) hideSelBar();
     }, 250));
   });
   applyEpubTheme();
@@ -992,8 +1036,9 @@ function clearSelection() {
 }
 function createFromSelection(color, withNote) {
   const p = R.pending; if (!p) return;
-  const a = { id: uid(), type: 'highlight', kind: p.kind, style: LS.get('lumen.style', 'highlight'), color, text: p.text.slice(0, 6000), note: '', tags: [], label: p.label, pct: p.pct, loc: p.loc, created: Date.now(), updated: Date.now() };
+  const a = { id: uid(), type: 'highlight', kind: p.kind, ...(p.area ? { area: true } : {}), style: p.area ? 'highlight' : LS.get('lumen.style', 'highlight'), color, text: p.text.slice(0, 6000), note: '', tags: [], label: p.label, pct: p.pct, loc: p.loc, created: Date.now(), updated: Date.now() };
   R.doc.annotations.push(a); clearSelection(); hideSelBar(); touchDoc();
+  if (p.area) setDrawing(false);
   if (withNote) openEditor(a);
 }
 
@@ -1354,6 +1399,8 @@ function bind() {
   // reader chrome
   $('#rBack').onclick = closeReader;
   $('#rMark').onclick = toggleBookmark;
+  $('#rDraw').onclick = () => setDrawing(!R.drawing);
+  bindDrawing();
   $('#rPanel').onclick = () => togglePanel(!$('#panel').classList.contains('open'));
   $('#scrim').onclick = () => togglePanel(false);
   $('#rAa').onclick = e => { e.stopPropagation(); const p = $('#aaPop'); p.hidden = !p.hidden; $('#rAa').classList.toggle('on', !p.hidden); syncAa(); };
@@ -1373,18 +1420,20 @@ function bind() {
   // PDF text selection
   document.addEventListener('selectionchange', debounce(() => {
     if (R.kind !== 'pdf' || !R.pdf) return;
+    if (R.drawing || R.selbarBusy) return;
     const p = pdfSelection();
-    if (p) { R.pending = p; showSelBar(); } else if (R.pending?.kind === 'pdf') hideSelBar();
+    if (p) { R.pending = p; showSelBar(); } else if (R.pending?.kind === 'pdf' && !R.pending.area) hideSelBar();
   }, 260));
 
   // selection toolbar
   $('#selbar').addEventListener('mousedown', e => e.preventDefault()); // keep the selection alive on desktop
+  $('#selbar').addEventListener('pointerdown', () => { R.selbarBusy = true; clearTimeout(R.sbT); R.sbT = setTimeout(() => R.selbarBusy = false, 900); });
   $('#selbar').addEventListener('click', e => {
     const d = e.target.closest('[data-color]'); if (d) return createFromSelection(d.dataset.color, false);
     const b = e.target.closest('[data-sel]'); if (!b) return;
     if (b.dataset.sel === 'note') createFromSelection(COLORS[0], true);
     if (b.dataset.sel === 'copy') { navigator.clipboard?.writeText(R.pending?.text || '').then(() => toast('Copied')); }
-    if (b.dataset.sel === 'close') { clearSelection(); hideSelBar(); }
+    if (b.dataset.sel === 'close') { clearSelection(); hideSelBar(); if (R.drawing) setDrawing(false); }
   });
 
   // panel
