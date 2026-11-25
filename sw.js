@@ -1,7 +1,7 @@
 /* Lumen Archive service worker: makes the app installable and usable offline. */
-const SHELL = 'lumen-shell-v1';
+const SHELL = 'lumen-shell-v2';
 const LIBS = 'lumen-libs-v1';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
+const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
