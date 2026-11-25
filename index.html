@@ -522,12 +522,12 @@ const GH = {
 };
 
 /* ════════════════ library ════════════════ */
-let BOOKS = [], LOCAL = [], NOTEFILES = new Map();
+let BOOKS = [], LOCAL = [], NOTEFILES = new Map(), LIB_INFO = null;
 const UI = { q: '', type: 'all', folder: '*', ptab: 'notes', pcolor: null, nbTag: null };
 
 function mkBook(path, size = 0, sha = '') {
-  const bd = clean(CFG.booksDir);
-  const rel = bd && path.startsWith(bd + '/') ? path.slice(bd.length + 1) : path;
+  const bd = clean(CFG.booksDir).toLowerCase();
+  const rel = bd && path.toLowerCase().startsWith(bd + '/') ? path.slice(bd.length + 1) : path;
   const parts = rel.split('/'); const name = parts.pop();
   const ext = (name.split('.').pop() || '').toLowerCase();
   const title = name.replace(/^local:/, '').replace(/\.(pdf|epub)$/i, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -542,7 +542,9 @@ async function loadLibrary() {
   try {
     const tree = await GH.tree();
     const bd = clean(CFG.booksDir), nd = clean(CFG.notesDir) || 'annotations';
-    BOOKS = tree.filter(t => t.type === 'blob' && (!bd || t.path.startsWith(bd + '/')) && /\.(pdf|epub)$/i.test(t.path)).map(t => mkBook(t.path, t.size, t.sha));
+    // Every PDF/EPUB in the repo counts, wherever it was uploaded; folders become shelves.
+    BOOKS = tree.filter(t => t.type === 'blob' && /\.(pdf|epub)$/i.test(t.path)).map(t => mkBook(t.path, t.size, t.sha));
+    LIB_INFO = { files: tree.filter(t => t.type === 'blob').length, branch: CFG.branch };
     NOTEFILES = new Map(tree.filter(t => t.type === 'blob' && t.path.startsWith(nd + '/') && t.path.endsWith('.json')).map(t => [t.path, t.sha]));
     LS.set('lumen.books', BOOKS);
     setSync(CFG.token ? 'synced' : 'local', CFG.token ? 'Connected' : 'Read-only (no token)');
@@ -573,7 +575,7 @@ function renderLibrary() {
     .sort((a, b) => (recent[b.path] || 0) - (recent[a.path] || 0) || a.title.localeCompare(b.title));
   if (!list.length) {
     shelf.innerHTML = `<div class="scrollpanel"><div class="big">空</div><h2>${all.length ? 'Nothing matches' : 'The shelves are empty'}</h2>
-      <p>${all.length ? 'Try another search or shelf.' : `Upload with the golden button, or add files to the <b>${esc(clean(CFG.booksDir) || '/')}</b> folder of <b>${esc(CFG.owner)}/${esc(CFG.repo)}</b>.`}</p></div>`;
+      <p>${all.length ? 'Try another search or shelf.' : `No PDF or EPUB found on the <b>${esc(CFG.branch)}</b> branch of <b>${esc(CFG.owner)}/${esc(CFG.repo)}</b>${LIB_INFO ? ` (${LIB_INFO.files} file${LIB_INFO.files === 1 ? '' : 's'} checked)` : ''}. Upload with the golden button, or check the file went to the <b>${esc(CFG.branch)}</b> branch.`}</p></div>`;
     return;
   }
   shelf.innerHTML = `<div class="count">${list.length} ${list.length === 1 ? 'volume' : 'volumes'}</div><div class="grid">${list.map((b, i) => cardHTML(b, i)).join('')}</div>`;
@@ -1095,6 +1097,7 @@ function buildMd(title, anns) {
   return s;
 }
 function download(name, text) {
+  if (window.LumenAndroid?.saveText) { LumenAndroid.saveText(name, text); return; }
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
   const a = Object.assign(document.createElement('a'), { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
@@ -1417,7 +1420,7 @@ function bind() {
 
 /* ════════════════ installable app ════════════════ */
 let installEvt = null;
-const isApp = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isApp = () => /LumenApp/.test(navigator.userAgent) || matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (!isApp()) $('#btnInstall').hidden = false; });
 addEventListener('appinstalled', () => { installEvt = null; $('#btnInstall').hidden = true; toast('Lumen is now on your home screen ✦', 3500); });
 async function installApp() {
@@ -1426,6 +1429,15 @@ async function installApp() {
 }
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e)));
 
+window.lumenBack = () => {
+  const m = $$('.modal').find(x => !x.hidden); if (m) { closeModal('#' + m.id); return true; }
+  if (!$('#aaPop').hidden) { $('#aaPop').hidden = true; $('#rAa').classList.remove('on'); return true; }
+  if ($('#selbar').classList.contains('show')) { clearSelection(); hideSelBar(); return true; }
+  if ($('#panel').classList.contains('open')) { togglePanel(false); return true; }
+  if (!$('#readerView').hidden) { closeReader(); return true; }
+  if (!$('#notebookView').hidden) { showView('library'); renderLibrary(); return true; }
+  return false;
+};
 bind();
 $('#btnInstall').onclick = installApp;
 $('#sInstall').onclick = installApp; if (isApp()) $('#sInstall').hidden = true;
