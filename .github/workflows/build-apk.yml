@@ -1,0 +1,260 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      # Keep the same signing key between builds so new APKs install as updates.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: lumen-signing-key-v1
+
+      - name: Create the Android project
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          APP_URL="https://${OWNER}.github.io/${REPO}/"
+          echo "App URL: $APP_URL"
+          mkdir -p android/app/src/main/java/io/github/lumen/archive android/app/src/main/res/mipmap-xxxhdpi android/app/src/main/res/values
+          cd android
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "Lumen"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+
+          cat > app/build.gradle <<EOF
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'io.github.lumen.archive'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'io.github.lumen.archive'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode ${GITHUB_RUN_NUMBER}
+                  versionName '1.${GITHUB_RUN_NUMBER}'
+              }
+              buildTypes {
+                  release { minifyEnabled false; signingConfig signingConfigs.debug }
+              }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application android:label="Lumen" android:icon="@mipmap/ic_launcher" android:theme="@style/Lumen"
+                  android:hardwareAccelerated="true" android:allowBackup="true">
+                  <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+                      android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="Lumen" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">#1a0f02</item>
+                  <item name="android:navigationBarColor">#1a0f02</item>
+                  <item name="android:colorAccent">#f6c855</item>
+              </style>
+          </resources>
+          EOF
+
+          cp ../icon-512.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+          cat > app/src/main/java/io/github/lumen/archive/MainActivity.java <<'EOF'
+          package io.github.lumen.archive;
+
+          import android.app.Activity;
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.MediaStore;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Toast;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStream;
+          import java.nio.charset.StandardCharsets;
+
+          public class MainActivity extends Activity {
+              static final String APP_URL = "__APP_URL__";
+              static final int PICK_FILES = 7;
+              WebView web;
+              ValueCallback<Uri[]> filePick;
+
+              @Override protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  web = new WebView(this);
+                  web.setBackgroundColor(Color.parseColor("#2b1a05"));
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setDatabaseEnabled(true);
+                  s.setSupportZoom(false);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setUserAgentString(s.getUserAgentString() + " LumenApp/1");
+                  web.addJavascriptInterface(new Bridge(), "LumenAndroid");
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                          Uri u = r.getUrl();
+                          String home = Uri.parse(APP_URL).getHost();
+                          if (u.getHost() != null && u.getHost().equalsIgnoreCase(home)) return false;
+                          try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception e) { }
+                          return true;
+                      }
+                  });
+
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
+                          if (filePick != null) filePick.onReceiveValue(null);
+                          filePick = cb;
+                          Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                          i.addCategory(Intent.CATEGORY_OPENABLE);
+                          i.setType("*/*");
+                          i.putExtra(Intent.EXTRA_MIME_TYPES, new String[] { "application/pdf", "application/epub+zip", "application/octet-stream" });
+                          i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, p.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE);
+                          try {
+                              startActivityForResult(Intent.createChooser(i, "Choose books"), PICK_FILES);
+                          } catch (Exception e) {
+                              filePick = null;
+                              return false;
+                          }
+                          return true;
+                      }
+                  });
+
+                  if (state != null) web.restoreState(state); else web.loadUrl(APP_URL);
+              }
+
+              @Override protected void onActivityResult(int req, int res, Intent data) {
+                  if (req != PICK_FILES || filePick == null) { super.onActivityResult(req, res, data); return; }
+                  Uri[] out = null;
+                  if (res == RESULT_OK && data != null) {
+                      if (data.getClipData() != null) {
+                          int n = data.getClipData().getItemCount();
+                          out = new Uri[n];
+                          for (int k = 0; k < n; k++) out[k] = data.getClipData().getItemAt(k).getUri();
+                      } else if (data.getData() != null) {
+                          out = new Uri[] { data.getData() };
+                      }
+                  }
+                  filePick.onReceiveValue(out);
+                  filePick = null;
+              }
+
+              @Override protected void onSaveInstanceState(Bundle out) {
+                  super.onSaveInstanceState(out);
+                  web.saveState(out);
+              }
+
+              @Override public void onBackPressed() {
+                  web.evaluateJavascript("(window.lumenBack && window.lumenBack()) ? 1 : 0", v -> {
+                      if (!"1".equals(v)) {
+                          if (web.canGoBack()) web.goBack(); else exitApp();
+                      }
+                  });
+              }
+
+              void exitApp() { super.onBackPressed(); }
+
+              class Bridge {
+                  @JavascriptInterface public void saveText(final String name, final String text) {
+                      runOnUiThread(() -> {
+                          try { save(name, text.getBytes(StandardCharsets.UTF_8)); }
+                          catch (Exception e) { toast("Could not save: " + e.getMessage()); }
+                      });
+                  }
+              }
+
+              void save(String name, byte[] bytes) throws Exception {
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      ContentValues cv = new ContentValues();
+                      cv.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                      cv.put(MediaStore.Downloads.MIME_TYPE, "text/markdown");
+                      Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                      try (OutputStream os = getContentResolver().openOutputStream(u)) { os.write(bytes); }
+                      toast("Saved to Downloads: " + name);
+                  } else {
+                      File f = new File(getExternalFilesDir(null), name);
+                      try (FileOutputStream os = new FileOutputStream(f)) { os.write(bytes); }
+                      toast("Saved: " + f.getAbsolutePath());
+                  }
+              }
+
+              void toast(String m) { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); }
+          }
+          EOF
+          sed -i "s#__APP_URL__#${APP_URL}#" app/src/main/java/io/github/lumen/archive/MainActivity.java
+
+      - name: Build the APK
+        working-directory: android
+        run: |
+          gradle --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ../Lumen.apk
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-v${{ github.run_number }}
+          name: Lumen for Android (build ${{ github.run_number }})
+          body: |
+            Download **Lumen.apk** below on your Android tablet or phone, open it, and allow installing from your browser if asked.
+            The app opens https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ and updates itself whenever you change index.html, so you rarely need a new APK.
+          files: Lumen.apk
+          make_latest: true
